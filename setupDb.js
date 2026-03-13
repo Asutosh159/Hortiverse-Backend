@@ -8,7 +8,7 @@ db.serialize(() => {
     full_name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'user',
+    role TEXT DEFAULT 'student',
     country TEXT,
     user_type TEXT,
     bio TEXT,
@@ -43,8 +43,8 @@ db.serialize(() => {
     title TEXT NOT NULL,
     author TEXT,
     institution TEXT,
-    publish_year INTEGER,
-    description TEXT,
+    year INTEGER,
+    desc TEXT,
     drive_link TEXT NOT NULL,
     tags TEXT, -- Stored as a JSON string
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -52,18 +52,20 @@ db.serialize(() => {
   )`);
 
   // 5. Stories (Featured Articles)
-  db.run(`CREATE TABLE IF NOT EXISTS stories (
+  db.run(`
+  CREATE TABLE IF NOT EXISTS stories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    author_id INTEGER,
-    title TEXT NOT NULL,
-    tag TEXT NOT NULL,
+    title TEXT,
+    author TEXT,
+    excerpt TEXT,
+    content TEXT,
+    tag TEXT,
+    image_url TEXT,
     read_time TEXT,
-    image_url TEXT NOT NULL,
-    excerpt TEXT NOT NULL,
-    content TEXT NOT NULL, -- Stored as Markdown
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (author_id) REFERENCES users (id) ON DELETE CASCADE
-  )`);
+    likes INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0
+  )
+`);
 
 // 6. Likes (Tracks who liked what - supports guests!)
   db.run(`CREATE TABLE IF NOT EXISTS likes (
@@ -101,7 +103,7 @@ db.serialize(() => {
     setting_value TEXT NOT NULL
   )`);
 
-  console.log("Database and all 9 tables created successfully!");
+  console.log("✅ Database and all 9 tables aligned and created successfully!");
 });
 
 db.close();
