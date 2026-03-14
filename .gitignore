@@ -2,3 +2,6 @@ node_modules/
 hortiverse.sqlite
 .env
 createAdmin.js
+migrate.js
+seedResources.js
+setupDb.js
