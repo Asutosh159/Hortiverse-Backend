@@ -19,7 +19,7 @@ app.use(express.json());
 // ==========================================
 const db = createClient({
   url: process.env.TURSO_DATABASE_URL,
-authToken: process.env.TURSO_AUTH_TOKEN,
+  authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
 // Initialize Tables (Runs on start)
@@ -219,10 +219,21 @@ app.post('/api/slides', async (req, res) => {
 
 app.get('/api/stats', async (req, res) => {
   try {
-    const students = await db.execute("SELECT COUNT(*) as count FROM users");
+    // 🟢 Updated to fetch all 4 counts that the SuperAdmin dashboard needs
+    const users = await db.execute("SELECT COUNT(*) as count FROM users");
     const stories = await db.execute("SELECT COUNT(*) as count FROM stories");
-    res.json({ students: students.rows[0].count || 0, stories: stories.rows[0].count || 0 });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const topics = await db.execute("SELECT COUNT(*) as count FROM topics");
+    const resources = await db.execute("SELECT COUNT(*) as count FROM resources");
+
+    res.json({ 
+      users: users.rows[0].count || 0, 
+      stories: stories.rows[0].count || 0,
+      topics: topics.rows[0].count || 0,
+      resources: resources.rows[0].count || 0
+    });
+  } catch (err) { 
+    res.status(500).json({ error: err.message }); 
+  }
 });
 
 app.post('/api/topics', async (req, res) => {
@@ -269,27 +280,47 @@ app.delete('/api/admin/:type/:id', async (req, res) => {
 // 7. SUPERADMIN EDIT ROUTES
 // ==========================================
 app.put('/api/admin/stories/:id', async (req, res) => {
-  const { title, author, content } = req.body;
+  // 🟢 Added image_url to the destructuring
+  const { title, author, content, image_url } = req.body;
   try {
-    await db.execute({ sql: `UPDATE stories SET title=?, author=?, content=? WHERE id=?`, args: [title, author, content, req.params.id] });
+    // 🟢 Updated SQL to include image_url
+    await db.execute({ 
+      sql: `UPDATE stories SET title=?, author=?, content=?, image_url=? WHERE id=?`, 
+      args: [title, author, content, image_url, req.params.id] 
+    });
     res.json({ success: true });
-  } catch (err) { res.json({ success: false }); }
+  } catch (err) { 
+    console.error("Update Story Error:", err);
+    res.status(500).json({ success: false, error: err.message }); 
+  }
 });
 
 app.put('/api/admin/topics/:id', async (req, res) => {
   const { label, icon, description } = req.body;
   try {
-    await db.execute({ sql: `UPDATE topics SET label=?, icon=?, description=? WHERE id=?`, args: [label, icon, description, req.params.id] });
+    await db.execute({ 
+      sql: `UPDATE topics SET label=?, icon=?, description=? WHERE id=?`, 
+      args: [label, icon, description, req.params.id] 
+    });
     res.json({ success: true });
-  } catch (err) { res.json({ success: false }); }
+  } catch (err) { 
+    res.status(500).json({ success: false, error: err.message }); 
+  }
 });
 
+// 🟢 NEW: Updated Resource PUT route to include author and desc
 app.put('/api/admin/resources/:id', async (req, res) => {
-  const { title, drive_link } = req.body;
+  const { title, drive_link, author, desc } = req.body;
   try {
-    await db.execute({ sql: `UPDATE resources SET title=?, drive_link=? WHERE id=?`, args: [title, drive_link, req.params.id] });
+    await db.execute({ 
+      sql: `UPDATE resources SET title=?, drive_link=?, author=?, desc=? WHERE id=?`, 
+      args: [title, drive_link, author, desc, req.params.id] 
+    });
     res.json({ success: true });
-  } catch (err) { res.json({ success: false }); }
+  } catch (err) { 
+    console.error("Failed to update resource:", err);
+    res.status(500).json({ success: false, error: err.message }); 
+  }
 });
 
 app.listen(PORT, () => { console.log(`🚀 Server is running on http://localhost:${PORT}`); });
