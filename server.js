@@ -4,6 +4,11 @@ const { createClient } = require('@libsql/client');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 
+// 🟢 Import Cloudinary & Multer packages
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const multer = require('multer');
+
 const app = express();
 const PORT = 5000;
 
@@ -13,6 +18,50 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
+
+// ==========================================
+// 🟢 CLOUDINARY & MULTER CONFIGURATION
+// ==========================================
+// 1. Configure Cloudinary with your keys
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+console.log("☁️  Cloudinary Configured for:", process.env.CLOUDINARY_CLOUD_NAME || "MISSING KEY");
+
+// 2. 🟢 FIXED: Treat PDFs as 'image' resource_type so Chrome can read them!
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    const cleanName = file.originalname.split('.')[0].replace(/[^a-zA-Z0-9]/g, "");
+    
+    if (file.mimetype === 'application/pdf') {
+      return {
+        folder: 'hortiverse_uploads',
+        resource_type: 'image', // Cloudinary optimizes PDFs if sent through the image pipeline
+        format: 'pdf',
+        public_id: cleanName + "_" + Date.now(), 
+      };
+    } 
+    
+    // Standard Image handling
+    return {
+      folder: 'hortiverse_uploads',
+      resource_type: 'image',
+      allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+      public_id: cleanName + "_" + Date.now(),
+    };
+  },
+});
+
+// 3. Create the upload middleware (Strict 4 MB limit)
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 4 * 1024 * 1024 } 
+});
+
 
 // ==========================================
 // TURSO CLOUD CONNECTION
@@ -106,17 +155,20 @@ app.get('/api/stories', async (req, res) => {
 });
 
 app.post('/api/stories', async (req, res) => {
-  const { title, author, excerpt, content, tag, image_url, read_time } = req.body;
-  if (!title || !content || !excerpt) return res.status(400).json({ error: "Missing required fields" });
+  const { title, author, content, tag, image_url, read_time } = req.body;
+  if (!title || !content ) return res.status(400).json({ error: "Missing required fields" });
   
-  const sql = `INSERT INTO stories (title, author, excerpt, content, tag, image_url, read_time, likes, comments) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`;
+  const sql = `INSERT INTO stories (title, author, content, tag, image_url, read_time, likes, comments) VALUES (?, ?, ?, ?, ?, ?, 0, 0)`;
   try {
     const result = await db.execute({
       sql,
-      args: [title, author, excerpt, content, tag, image_url, read_time]
+      args: [title, author, content, tag, image_url, read_time]
     });
     res.json({ success: true, id: Number(result.lastInsertRowid) });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    console.error("Story DB Error:", err.message);
+    res.status(500).json({ error: err.message }); 
+  }
 });
 
 app.post('/api/stories/:id/like', async (req, res) => {
@@ -219,7 +271,6 @@ app.post('/api/slides', async (req, res) => {
 
 app.get('/api/stats', async (req, res) => {
   try {
-    // 🟢 Updated to fetch all 4 counts that the SuperAdmin dashboard needs
     const users = await db.execute("SELECT COUNT(*) as count FROM users");
     const stories = await db.execute("SELECT COUNT(*) as count FROM stories");
     const topics = await db.execute("SELECT COUNT(*) as count FROM topics");
@@ -265,25 +316,50 @@ app.post('/api/admin/users/:id/promote', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// 🟢 Unified Delete Route (Handles Cloudinary Cleanup for Both PDFs and Images)
 app.delete('/api/admin/:type/:id', async (req, res) => {
   const { type, id } = req.params;
   const tableMap = { user: 'users', story: 'stories', topic: 'topics', resource: 'resources', slide: 'hero_slides' };
   const table = tableMap[type];
+  
   if (!table) return res.status(400).json({ error: "Invalid type" });
+
   try {
+    const fetchResult = await db.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [id] });
+    const record = fetchResult.rows[0];
+    const fileUrl = (record && record.image_url) ? record.image_url : (record && record.drive_link) ? record.drive_link : null;
+
+    if (fileUrl && fileUrl.includes('cloudinary.com')) {
+      try {
+        const folderIndex = fileUrl.indexOf('hortiverse_uploads');
+        if (folderIndex !== -1) {
+          const pathWithExt = fileUrl.substring(folderIndex);
+          // 🟢 FIXED: Since PDFs are saved as "images" in Cloudinary, we always chop off the extension for deletion
+          const publicId = pathWithExt.substring(0, pathWithExt.lastIndexOf('.'));
+          
+          console.log(`🗑️ Deleting orphaned file from Cloudinary:`, publicId);
+          await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+        }
+      } catch (cloudErr) {
+        console.error("⚠️ Failed to delete from Cloudinary, continuing DB delete.", cloudErr);
+      }
+    }
+
     await db.execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [id] });
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    
+  } catch (err) { 
+    console.error("Delete Error:", err.message);
+    res.status(500).json({ error: err.message }); 
+  }
 });
 
 // ==========================================
 // 7. SUPERADMIN EDIT ROUTES
 // ==========================================
 app.put('/api/admin/stories/:id', async (req, res) => {
-  // 🟢 Added image_url to the destructuring
   const { title, author, content, image_url } = req.body;
   try {
-    // 🟢 Updated SQL to include image_url
     await db.execute({ 
       sql: `UPDATE stories SET title=?, author=?, content=?, image_url=? WHERE id=?`, 
       args: [title, author, content, image_url, req.params.id] 
@@ -308,7 +384,6 @@ app.put('/api/admin/topics/:id', async (req, res) => {
   }
 });
 
-// 🟢 NEW: Updated Resource PUT route to include author and desc
 app.put('/api/admin/resources/:id', async (req, res) => {
   const { title, drive_link, author, desc } = req.body;
   try {
@@ -321,6 +396,45 @@ app.put('/api/admin/resources/:id', async (req, res) => {
     console.error("Failed to update resource:", err);
     res.status(500).json({ success: false, error: err.message }); 
   }
+});
+
+// ==========================================
+// 8. IMAGE UPLOAD ROUTE
+// ==========================================
+app.post('/api/upload', upload.single('image'), (req, res) => {
+  try {
+    if (!req.file) {
+      console.log("❌ No file caught by Multer");
+      return res.status(400).json({ error: "No image file provided" });
+    }
+
+    console.log("✅ Successfully uploaded to Cloudinary:", req.file.path);
+    res.json({ success: true, imageUrl: req.file.path });
+    
+  } catch (error) {
+    console.error("❌ FULL UPLOAD ERROR DETAILS:", error);
+    res.status(500).json({ error: 'Failed to upload', details: error.message });
+  }
+});
+
+// ==========================================
+// 🟢 GLOBAL ERROR CATCHER
+// ==========================================
+app.use((err, req, res, next) => {
+  console.error("❌ GLOBAL MIDDLEWARE ERROR CAUGHT:");
+  console.error(err);
+  
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: "File too large", details: "Maximum allowed file size is 4MB." });
+    }
+    return res.status(400).json({ error: "Multer Error", details: err.message });
+  }
+  
+  res.status(500).json({ 
+    error: "Server encountered an error while uploading", 
+    details: err.message 
+  });
 });
 
 app.listen(PORT, () => { console.log(`🚀 Server is running on http://localhost:${PORT}`); });
