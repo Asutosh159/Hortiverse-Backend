@@ -31,7 +31,7 @@ cloudinary.config({
 
 console.log("☁️  Cloudinary Configured for:", process.env.CLOUDINARY_CLOUD_NAME || "MISSING KEY");
 
-// 2. 🟢 FIXED: Treat PDFs as 'image' resource_type so Chrome can read them!
+// 2. Treat PDFs as 'image' resource_type so Chrome can read them!
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => {
@@ -40,13 +40,12 @@ const storage = new CloudinaryStorage({
     if (file.mimetype === 'application/pdf') {
       return {
         folder: 'hortiverse_uploads',
-        resource_type: 'image', // Cloudinary optimizes PDFs if sent through the image pipeline
+        resource_type: 'image',
         format: 'pdf',
         public_id: cleanName + "_" + Date.now(), 
       };
     } 
     
-    // Standard Image handling
     return {
       folder: 'hortiverse_uploads',
       resource_type: 'image',
@@ -316,7 +315,9 @@ app.post('/api/admin/users/:id/promote', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🟢 Unified Delete Route (Handles Cloudinary Cleanup for Both PDFs and Images)
+// ==========================================
+// 🟢 7. UNIFIED DELETE ROUTE (The Ultimate Database & Cloudinary Sweeper)
+// ==========================================
 app.delete('/api/admin/:type/:id', async (req, res) => {
   const { type, id } = req.params;
   const tableMap = { user: 'users', story: 'stories', topic: 'topics', resource: 'resources', slide: 'hero_slides' };
@@ -327,24 +328,41 @@ app.delete('/api/admin/:type/:id', async (req, res) => {
   try {
     const fetchResult = await db.execute({ sql: `SELECT * FROM ${table} WHERE id = ?`, args: [id] });
     const record = fetchResult.rows[0];
-    const fileUrl = (record && record.image_url) ? record.image_url : (record && record.drive_link) ? record.drive_link : null;
+    
+    if (record) {
+      let urlsToDelete = [];
 
-    if (fileUrl && fileUrl.includes('cloudinary.com')) {
-      try {
-        const folderIndex = fileUrl.indexOf('hortiverse_uploads');
-        if (folderIndex !== -1) {
-          const pathWithExt = fileUrl.substring(folderIndex);
-          // 🟢 FIXED: Since PDFs are saved as "images" in Cloudinary, we always chop off the extension for deletion
-          const publicId = pathWithExt.substring(0, pathWithExt.lastIndexOf('.'));
-          
-          console.log(`🗑️ Deleting orphaned file from Cloudinary:`, publicId);
-          await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
-        }
-      } catch (cloudErr) {
-        console.error("⚠️ Failed to delete from Cloudinary, continuing DB delete.", cloudErr);
+      // Phase 1: Grab Main Cover Image or File (Stories, Resources, Slides)
+      const mainUrl = record.image_url || record.drive_link;
+      if (mainUrl && mainUrl.includes('cloudinary.com')) {
+        urlsToDelete.push(mainUrl);
+      }
+
+      // Phase 2: Deep Sweep for Inline Markdown Images (Topics, Stories)
+      const contentText = record.description || record.content || "";
+      // Finds all URLs formatted as ![...](https://res.cloudinary.com/...)
+      const inlineMatches = [...contentText.matchAll(/!\[.*?\]\((https?:\/\/res\.cloudinary\.com[^)]+)\)/gi)];
+      inlineMatches.forEach(m => urlsToDelete.push(m[1]));
+
+      // Phase 3: Perfect Deletion from Cloudinary (Strips pesky hidden query tags)
+      for (let fileUrl of urlsToDelete) {
+         try {
+           const cleanUrl = fileUrl.split('?')[0]; // Remove ?_a= tags
+           const folderIndex = cleanUrl.indexOf('hortiverse_uploads');
+           if (folderIndex !== -1) {
+             const pathWithExt = cleanUrl.substring(folderIndex);
+             const publicId = pathWithExt.substring(0, pathWithExt.lastIndexOf('.'));
+             
+             console.log(`🗑️ Backend Deep Sweep: Deleting from Cloudinary ->`, publicId);
+             await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+           }
+         } catch (cloudErr) {
+           console.error(`⚠️ Failed to delete ${fileUrl} from Cloudinary:`, cloudErr.message);
+         }
       }
     }
 
+    // Phase 4: Finally, delete the record from the database!
     await db.execute({ sql: `DELETE FROM ${table} WHERE id = ?`, args: [id] });
     res.json({ success: true });
     
@@ -355,7 +373,7 @@ app.delete('/api/admin/:type/:id', async (req, res) => {
 });
 
 // ==========================================
-// 7. SUPERADMIN EDIT ROUTES
+// 8. SUPERADMIN EDIT ROUTES
 // ==========================================
 app.put('/api/admin/stories/:id', async (req, res) => {
   const { title, author, content, image_url } = req.body;
@@ -399,7 +417,7 @@ app.put('/api/admin/resources/:id', async (req, res) => {
 });
 
 // ==========================================
-// 8. IMAGE UPLOAD ROUTE
+// 9. IMAGE UPLOAD ROUTE
 // ==========================================
 app.post('/api/upload', upload.single('image'), (req, res) => {
   try {
@@ -414,6 +432,39 @@ app.post('/api/upload', upload.single('image'), (req, res) => {
   } catch (error) {
     console.error("❌ FULL UPLOAD ERROR DETAILS:", error);
     res.status(500).json({ error: 'Failed to upload', details: error.message });
+  }
+});
+
+// ==========================================
+// 🟢 10. STANDALONE CLOUDINARY SWEEPER ROUTE
+// Handles inline images deleted via the React editor popup before saving
+// ==========================================
+app.delete('/api/admin/cloudinary/delete', async (req, res) => {
+  const rawUrl = req.query.url;
+  
+  if (!rawUrl || !rawUrl.includes('cloudinary.com')) {
+    return res.status(400).json({ error: "Invalid Cloudinary URL" });
+  }
+
+  try {
+    // FIXED: Strips hidden query tags to ensure perfect public_id matching
+    const cleanUrl = rawUrl.split('?')[0]; 
+    const folderIndex = cleanUrl.indexOf('hortiverse_uploads');
+    
+    if (folderIndex !== -1) {
+      const pathWithExt = cleanUrl.substring(folderIndex);
+      const publicId = pathWithExt.substring(0, pathWithExt.lastIndexOf('.'));
+      
+      console.log(`🗑️ Standalone Sweep: Deleting orphaned file ->`, publicId);
+      const result = await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+      console.log("Cloudinary Result:", result);
+      
+      return res.json({ success: true, message: "File destroyed from Cloudinary", result });
+    }
+    res.status(400).json({ error: "Could not extract Public ID" });
+  } catch (err) {
+    console.error("⚠️ Standalone Sweep Failed:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
