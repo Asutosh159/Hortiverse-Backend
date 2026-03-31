@@ -170,6 +170,28 @@ app.post('/api/stories', async (req, res) => {
   }
 });
 
+// app.post('/api/stories/:id/like', async (req, res) => {
+//   const storyId = req.params.id;
+//   const visitorId = req.body.visitorId;
+//   if (!visitorId) return res.status(400).json({ error: "Visitor ID is required" });
+
+//   try {
+//     const check = await db.execute({
+//       sql: `SELECT visitor_id FROM likes WHERE story_id = ? AND visitor_id = ?`,
+//       args: [storyId, visitorId]
+//     });
+
+//     if (check.rows.length > 0) {
+//       await db.execute({ sql: `DELETE FROM likes WHERE story_id = ? AND visitor_id = ?`, args: [storyId, visitorId] });
+//       await db.execute({ sql: `UPDATE stories SET likes = likes - 1 WHERE id = ?`, args: [storyId] });
+//       res.json({ action: "unliked", liked: false });
+//     } else {
+//       await db.execute({ sql: `INSERT INTO likes (story_id, visitor_id) VALUES (?, ?)`, args: [storyId, visitorId] });
+//       await db.execute({ sql: `UPDATE stories SET likes = likes + 1 WHERE id = ?`, args: [storyId] });
+//       res.json({ action: "liked", liked: true });
+//     }
+//   } catch (err) { res.status(500).json({ error: err.message }); }
+// });
 app.post('/api/stories/:id/like', async (req, res) => {
   const storyId = req.params.id;
   const visitorId = req.body.visitorId;
@@ -183,7 +205,8 @@ app.post('/api/stories/:id/like', async (req, res) => {
 
     if (check.rows.length > 0) {
       await db.execute({ sql: `DELETE FROM likes WHERE story_id = ? AND visitor_id = ?`, args: [storyId, visitorId] });
-      await db.execute({ sql: `UPDATE stories SET likes = likes - 1 WHERE id = ?`, args: [storyId] });
+      // 🟢 FIXED: The CASE WHEN prevents negative values entirely.
+      await db.execute({ sql: `UPDATE stories SET likes = CASE WHEN likes > 0 THEN likes - 1 ELSE 0 END WHERE id = ?`, args: [storyId] });
       res.json({ action: "unliked", liked: false });
     } else {
       await db.execute({ sql: `INSERT INTO likes (story_id, visitor_id) VALUES (?, ?)`, args: [storyId, visitorId] });
